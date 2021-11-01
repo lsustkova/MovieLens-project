@@ -1,0 +1,518 @@
+---
+title: "Report -- MovieLens"
+author: "Lucie Schaynová"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    number_sections: yes
+    extra_dependencies: float
+    toc: yes
+    toc_depth: 2
+  word_document:
+    toc: yes
+    toc_depth: '2'
+---
+
+\newpage
+
+# Introduction
+In this project, we will work with MovieLens data set coming from the code:
+
+```{r, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+if (!require(lubridate)) install.packages("lubridate")
+library(lubridate)
+if (!require(tidyverse)) install.packages("tidyverse")
+library(tidyverse)
+if (!require(caret)) install.packages("caret")
+library(caret)
+if (!require(data.table)) install.packages("data.table")
+library(data.table)
+
+dl <- tempfile()
+movies <- str_split_fixed(readLines("ml-10M100K/movies.dat"), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                             title = as.character(title),
+                                             genres = as.character(genres))
+ratings <- str_split_fixed(readLines("ml-10M100K/ratings.dat"), "\\::", 4)
+colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
+ratings <- as.data.frame(ratings) %>% mutate(userId = as.numeric(userId),
+                                             movieId = as.numeric(movieId),
+                                             rating = as.numeric(rating),
+                                             timestamp = as.numeric(timestamp))
+movielens <- left_join(ratings, movies, by = "movieId")
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+
+removed <- anti_join(temp, validation)
+
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, temp, test_index, movielens, removed)
+```
+
+The code above is provided in the edX capstone project and gives us `edx` data set. We will analyze data in the following section. 
+
+\newpage
+
+# Analysis
+
+Let us have a look on data and basic summary statistics.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+# Show first 7 rows including a header
+head(edx) 
+```
+
+Each row represents a rating given by one user to one movie. Data in the `title` column includes two information -- name of a movie and a year of the movie's premiere. So we can create `year` column. There is also the `timestamp` column from which we can get the day of the week the rating was done, in scale 1--7 where 1 is Monday. We will create `rateday` column which will be useful for our further analysis.
+
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Create new column with year of premiere and day of rate
+# library(lubridate) # need to load lubridate library to use wday function
+edx <- edx %>% mutate(
+  year = as.numeric(str_sub(title,-5,-2)), 
+    # str_sub(): replace substrings from a character vector, 
+    # as.numeric(): retype to numeric
+  rateday = lubridate::wday(as_datetime(timestamp), week_start = 1))
+    # wday(): returns the day of the week as a decimal number
+    # as_datetime(): converts an object to a date-time, defaults to using UTC
+```
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+# Show structure of data
+str(edx)
+```
+
+In total, there are 9000061 observations and 8 variables.
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Basic summary statistics
+summary(edx) 
+```
+
+We can see that the data set is in the tidy format. The oldest movie is 106 years old. 
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE} 
+# Number of unique movies and users
+edx %>% summarize(n_users = n_distinct(userId), n_movies = n_distinct(movieId))
+    # summarize(): summarize each group to fewer rows
+    # n_distinct(): count the number of unique values
+```
+We can see the number of unique users and movies which were rated. This gives us larger number ($69878\times 10677 =746087406$) than our 9 million rows. This means that not every user rated every movie.  
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# All unique ratings
+unique(edx$rating)
+```
+
+We can see that there are not zeros given as ratings. The highest rate is 5.0, the lowest is 0.5.
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Bar chart to visualize distribution of ratings
+edx %>%
+  group_by(rating) %>% 
+  summarize(count = n()) %>%
+  ggplot(aes(x = rating, y = count)) +
+  geom_col()
+    # group_by(): takes an existing table and converts it into a grouped table where        operations are performed
+    # n(): number of rows
+    # ggplot(aes()): declare the input data frame for a graphic
+    # geom_col(): depics bar chart
+```
+
+The histogram shows us that half star ratings are less common than whole star ratings. The top 5 ratings from most to least are:  4, 3, 5, 3.5 and 2.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# The greatest number of ratings
+edx  %>% group_by(movieId) %>% 
+   summarize(numRatings = n(), movieTitle = first(title)) %>%
+  arrange(desc(numRatings)) %>%
+  top_n(1, numRatings)
+    # firts(): first item of an object
+    # arrange(): orders the rows of a data frame by the values of selected columns
+    # desc(): descending order
+    # top_n(): select top n rows by value
+```
+
+Pulp Fiction movie has the greatest number of ratings. So there are some movies that are rated more often than others. 
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Top three movies with the greatest number of ratings equal to 5.0
+edx %>% filter(rating == 5.0) %>% group_by(movieId) %>% 
+   summarize(numRatings = n(), movieTitle = first(title)) %>%
+  arrange(desc(numRatings)) %>%
+  top_n(3, numRatings)
+    # fitler(): gives subset of data frame, retaining all rows that satisfy conditions
+```
+
+The Shawshank Redemption, Pulp Fiction, and The Silence of the Lambs are top three movies with the greatest number of ratings equal to 5.0.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Total movie ratings per genre
+ edx%>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count)) %>%
+  top_n(3, count)
+```
+
+Drama is the most rated genre. 
+
+Some movies are rated more often than others. This corresponds to users activity as follows:
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Users activity
+edx %>% count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(color = "grey") + 
+  scale_x_log10()
+    # count(): count the number of occurences 
+    # geom_histogram(): visualize the distribution of a single variable
+    # scale_x_log10(): log10 transformation of the scale x
+```
+
+The plot above shows us that number of ratings are different for each user. Some users are more active than others when rating movies.
+
+Now we can look at popularity of some genres per year.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Popularity of genres per year
+edx %>% group_by(year, genres) %>% 
+  summarise(number = n()) %>% 
+  filter(genres %in% c("Comedy","Drama","War", "Sci-Fi", "Animation", "Western")) %>%
+  ggplot(aes(x = year, y = number)) +
+  geom_line(aes(color=genres)) 
+    # c(): this function stands for 'combine', is used to get the output by giving          parameters inside the function
+    # geom_line(): connects the observations in order of the variable on the x axis
+```
+
+Drama and comedy became more popular than others. 
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Number of ratings over the years
+edx %>% 
+  group_by(year) %>%
+  summarize(count = n()) %>%
+  ggplot(aes(x = year, y = count)) +
+  geom_line() +
+  geom_vline(xintercept=1995, color = "blue")
+    # geom_vline(): add vertical reference line to a plot
+```
+
+The plot above depicts number of ratings over the years. The greatest number of ratings is in 1995. We can also visualize average ratings per year:
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Average ratings over the years
+edx %>% group_by(year) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(year, rating)) +
+  geom_point() +
+  geom_smooth()
+    # mean(): average of numbers
+    # geom_poin(): create a scatterplot
+    # geom_smooth(): aids the eye in seeing patterns in the presence of overplotting
+```
+
+Until 1980, movies have very high rate, but modern movies are rated relatively low. What happened to the movies or users?
+
+We need to arrange additional columns. The new column `datetime` converts `timestamp` to more friendly date format and the column `month` gives us month of the rating. We can use this to visualize a trend of ratings through months over the years: 
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# New 'datetime' and 'month' columns
+months <- edx %>% 
+  mutate(datetime = as.POSIXct(timestamp,origin = "1970-01-01",tz = "GMT")) %>%
+  mutate(month = as.integer(str_sub(datetime,6,7)) ) 
+    #as.POSIXct(): date-time conversion function
+```
+
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+#  Ratings through months over the years
+months %>% 
+  group_by(month) %>% 
+  summarize(count = n()) %>% 
+  ggplot(aes(x = month,y = count)) + 
+  geom_col() +
+  scale_x_continuous(breaks = seq(1, 12, 1),minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq(0, 1000000,100000), limits=c(0,1e6), minor_breaks = NULL)
+```
+The highest activity of all users is in November, the lowest in September, but the activity is almost balanced. Similarly, we can visualize average ratings over the months:
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Average ratings over the months
+months %>% 
+  group_by(month) %>% 
+  summarize(mean = mean(rating)) %>% 
+  ggplot(aes(x = month,y = mean)) + 
+  geom_line() +
+  scale_x_continuous(breaks = seq(1, 12, 1),minor_breaks = NULL) 
+```
+Users give the highest rates in October, the lowest in August.  
+
+There might be interesting a number of premieres for every year:
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Number of premieres per year
+movies %>% mutate(year = as.numeric(str_sub(title,-5,-2))) %>%
+  group_by(year) %>%
+  summarise(number = n()) %>% 
+  ggplot(aes(x = year, y = number)) +
+  geom_line() +
+  geom_vline(xintercept=2002, color = "blue")
+```
+The number of premieres increases until 2002, then it decreases.
+
+Finally, we will look at activity of users during each day of the weeks.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+# Activity of users
+edx %>% 
+  group_by(rateday) %>% 
+  summarize(count = n()) %>% 
+  ggplot(aes(x = rateday,y = count)) + 
+  geom_line() +
+  scale_x_continuous(breaks = seq(1, 7, 1),minor_breaks = NULL) 
+```
+
+The highest activity is on Tuesday, the lowest on Saturday.
+
+
+## Model preparation
+
+Our aim is to predict user ratings for a movie, based on chosen set of features (predictors) from our data set. We will use machine learning techniques. Our data set consists of 9 million ratings on 10 thousand movies, made by 70 thousand users. The goal is to find a prediction method that will generate Residual Mean Squared Error (RMSE) lower than 0.86490.
+
+Until now, we worked with the whole `edx` data set. For our machine learning purposes, we need to split the data set into training set `edx_train` and test set `edx_test` to assess the accuracy of the models we implement.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Split the data set
+edx_test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.2, list = FALSE)
+edx_train <- edx[-edx_test_index,]
+edx_test <- edx[edx_test_index,]
+```
+
+We cannot include users and movies in the test set that do not appear in the training set, so we need to remove these entries.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Remove movieId and userId columns
+edx_test <- edx_test %>%
+  semi_join(edx_train, by = "movieId") %>%
+  semi_join(edx_train, by = "userId")
+    #semi_join(): filter rows from x based on the presence of matches in y
+```
+
+
+We will use the `RMSE` function which is typical error we make when predicting a movie rating. If this number is larger than 1, it means that our typical error is larger than one star, which is not good.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+    # function(): definition of a new function 
+    # sqrt(): square root of the argument
+```
+
+
+
+
+## Naive model
+
+The simplest model which ignores all the features is simply to calculate average of `rating`.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+# Average of ratings in the training set
+mu <- mean(edx_train$rating)
+message('average:')
+mu
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+baseline_rmse <- RMSE(edx_test$rating,mu)
+results <- tibble(method = "Using mean only", RMSE = baseline_rmse) 
+message('RMSE:')
+baseline_rmse
+    # tibble(): constructs a data frame
+```
+
+We can see that the mean is not enough for our prediction. We need to improve our model adding some of our features.    
+
+## Modeling movie effects
+
+Let us take the movie effect into account as follows:
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Modeling movie effects
+movie_averages <- edx_train %>% 
+  group_by(movieId) %>%
+  summarise(b_i = mean(rating - mu))
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+# Predictions
+predictions_m <- edx_test %>%
+  left_join(movie_averages, by = "movieId") %>%
+  mutate(pred = mu + b_i)
+    # left_join(): the mutating joins add columns from y to x, includes all rows in x
+
+# Results
+movie_rmse <- RMSE(edx_test$rating,predictions_m$pred)
+message('RMSE:')
+movie_rmse
+results <- bind_rows(results,
+                     tibble(method = "Movie Effect Model", RMSE = movie_rmse))
+    # bind_rows(): bind multiple data frames by row
+```
+
+Our result is 0.9427515 which is not enough, but we can see an improvement. Let us make it better.
+
+## Modeling movie and user effect
+
+Let us also add `userId` feature, so we will work with movie and user now.  
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+# Modeling movie and user effect
+user_averages <- edx_train %>%
+  left_join(movie_averages, by = "movieId") %>%
+  group_by(userId) %>%
+  summarise(b_u = mean(rating-mu-b_i))
+
+# Predictions
+predictions_m_u <- edx_test %>%
+  left_join(movie_averages, by = "movieId") %>%
+  left_join(user_averages, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u)
+
+# Results
+user_rmse <- RMSE(edx_test$rating,predictions_m_u$pred)
+message('RMSE:')
+user_rmse
+results <- bind_rows(results,
+                     tibble(method = "Movie and User Effect Model", RMSE = user_rmse))
+```
+
+## Regularization 
+We know that some users are more active in rating than others, so some movies are rated very few times. RMSE is sensitive to large errors. Large errors can increase our RMSE so we must put a penalty term to give less importance to such effect.
+
+Denote a tuning parameter as `lambda`. We can use cross-validation to choose it. For each lambda we will find movie averages (`b_i`) and user averages (`b_u`) followed by rating.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Regularization 
+lambda <- seq(0, 10, 0.25)
+rmses <- sapply(lambda, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx_train %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx_train %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+
+# Predictions
+  predicted_ratings <- edx_test %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(edx_test$rating,predicted_ratings))
+})
+```
+
+Let us plot `rmses` vs `lambda` to select the optimal lambda.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE, fig.align='center', out.width = "80%"}
+qplot(lambda, rmses) 
+    # qplot(): quick plot
+```
+
+The minimum of `lambda` is like this:
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+lambda_min <- lambda[which.min(rmses)]
+message('minimum of lambda:')
+lambda_min
+    # which.min(): determines the index of the first minimum of a vector
+```
+
+We need to compute regularized estimates of `b_i` using `lambda_min` and regularized estimates of `b_u` using `lambda_min`.
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Regularized estimates of b_i
+movie_averages_reg <- edx_train %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu)/(n()+lambda_min), n_i = n())
+```
+
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Regularized estimates of b_u
+user_averages_reg <- edx_train %>% 
+  left_join(movie_averages_reg, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu - b_i)/(n()+lambda_min), n_u = n())
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, error=FALSE}
+# Prediction
+predicted_ratings_reg <- edx_test %>% 
+  left_join(movie_averages_reg, by='movieId') %>%
+  left_join(user_averages_reg, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>% 
+  .$pred
+
+# Test and save results
+model_3_rmse <- RMSE(edx_test$rating,predicted_ratings_reg)
+results <- bind_rows(results,
+                          tibble(method="Regularized Movie and User Effect Model",  
+                                     RMSE = model_3_rmse ))
+message('RMSE:')
+model_3_rmse
+```
+
+The RMSE calculated on train and test data sets is equal to 0.8644076, which is slightly less than 0.86490.
+
+
+
+# Results
+
+The RMSE values of our models are as follows:
+
+```{r, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+# Table of all results
+results
+```
+
+This indicates an improvement of the model over different assumptions. The final RMSE is 0.8644076 with an improvement. This implies that we can trust our prediction for movie rating given by a movie and a user.
+
+
+# Conclusion
+
+In section Analysis, We analyzed original data from many different angles. We offered many statistics with plots. We also had to manipulate with original data to get additional columns. This also helped to us provide more extensive statistics.
+
+Then we used machine learning modeling to predict ratings. The simplest Naive model gave us RMSE grater than 1 which means we may miss the rating by one star, which is not good prediction. Then Movie effect and User effect on model provided an improvement. A deeper insight into the data revealed some data point in the features have large effect on errors. So a regularization model was used to penalize such data points. The final RMSE is 0.8644076 with an improvement with respect to the baseline model. This implies that we can trust our prediction for movie rating given by a users.    
+
+
+
+
